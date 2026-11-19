@@ -24,36 +24,37 @@ class BrowserSecurity:
         parsed = urlparse(url)
         if parsed.scheme not in {"http", "https"}:
             raise NavigationDeniedError("يسمح فقط بروتوكولات HTTP وHTTPS")
+        if parsed.username is not None or parsed.password is not None:
+            raise NavigationDeniedError("بيانات تسجيل الدخول داخل العنوان غير مسموحة")
         host = (parsed.hostname or "").lower().strip(".")
         if not host:
             raise NavigationDeniedError("عنوان الموقع غير صالح")
+        try:
+            port = parsed.port
+        except ValueError as exc:
+            raise NavigationDeniedError("منفذ الموقع غير صالح") from exc
 
         local_names = {"localhost", "127.0.0.1", "0.0.0.0", "::1"}
-        if host not in local_names:
+        try:
+            address = ipaddress.ip_address(host)
+            resolved_addresses = {address}
+        except ValueError:
             try:
                 resolved_addresses = {
-                    address[4][0]
-                    for address in socket.getaddrinfo(host, parsed.port, type=socket.SOCK_STREAM)
+                    ipaddress.ip_address(address[4][0])
+                    for address in socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
                 }
-            except (socket.gaierror, ValueError):
+            except (OSError, ValueError):
                 resolved_addresses = set()
-        else:
-            resolved_addresses = {host}
 
         if not resolved_addresses:
             raise NavigationDeniedError("تعذر التحقق من عنوان الموقع")
 
-        try:
-            contains_private_address = any(
-                (address := ipaddress.ip_address(resolved_address)).is_private
-                or address.is_loopback
-                or address.is_link_local
-                for resolved_address in resolved_addresses
-            )
-        except ValueError:
-            contains_private_address = False
-
-        if (host in local_names or contains_private_address) and not self.allow_local:
+        contains_non_public_address = any(not address.is_global for address in resolved_addresses)
+        if (
+            (host in local_names or contains_non_public_address)
+            and not self.allow_local
+        ):
             raise NavigationDeniedError("الشبكات المحلية ونطاقات البيانات السحابية محظورة")
 
         allowed = host in self.allowed_domains or any(

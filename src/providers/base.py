@@ -15,6 +15,10 @@ class InvalidRequestError(ProviderError):
     """Request is invalid and should not be retried."""
 
 
+class ProviderConfigurationError(ProviderError):
+    """The provider rejected its credentials or model configuration."""
+
+
 class RateLimitError(ProviderError):
     """Provider quota or rate limit was exceeded."""
 
@@ -41,4 +45,7 @@ class AIProvider(ABC):
     @abstractmethod
     async def health_check(self) -> bool:
         """Check whether provider credentials and service are usable."""
+
+    async def close(self) -> None:
+        """Release provider resources when the application shuts down."""
 

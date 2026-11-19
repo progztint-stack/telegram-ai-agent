@@ -23,10 +23,17 @@ def test_localhost_blocked_by_default():
         security.validate_url("http://localhost:8080")
 
 
+def test_credentials_in_url_are_rejected():
+    security = BrowserSecurity({"example.com"}, allow_local=True)
+    with pytest.raises(NavigationDeniedError):
+        security.validate_url("https://user:password@example.com/")
+
+
 @pytest.mark.parametrize("url", [
     "http://127.0.0.1/",
     "http://10.0.0.1/",
     "http://169.254.169.254/latest/meta-data",
+    "http://100.100.100.200/",
 ])
 def test_private_networks_blocked(url):
     security = BrowserSecurity({"127.0.0.1", "10.0.0.1", "169.254.169.254"}, allow_local=False)

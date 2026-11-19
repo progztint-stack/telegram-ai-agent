@@ -2,65 +2,114 @@
 
 from __future__ import annotations
 
-import asyncio
+import logging
 
-from telegram.ext import Application, CommandHandler
+from telegram import Update
+from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters
 
 from .bot.handlers import BotHandlers
+from .browser.manager import BrowserManager
+from .browser.security import BrowserSecurity
 from .config.logging import configure_logging
 from .config.settings import Settings
 from .database.repository import TaskRepository
+from .providers.base import AIProvider
+from .providers.failover import FailoverPolicy
 from .providers.gemini import GeminiProvider
 from .providers.groq import GroqProvider
-from .providers.mock import MockProvider
 from .providers.manager import ProviderManager
 from .services.context_manager import ContextManager
 from .services.task_manager import TaskManager
 
 
-def build_application() -> Application | None:
-    settings = Settings()
-    configure_logging()
+async def _shutdown(application: Application) -> None:
+    providers: ProviderManager = application.bot_data["provider_manager"]
+    browser: BrowserManager = application.bot_data["browser_manager"]
+    try:
+        await providers.close()
+    finally:
+        await browser.close()
 
-    if settings.missing_bot_config():
+
+async def _handle_telegram_error(
+    update: object,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    logging.getLogger(__name__).error(
+        "Unhandled Telegram update error (%s)",
+        type(context.error).__name__ if context.error else "unknown",
+    )
+
+
+def build_application(settings: Settings | None = None) -> Application | None:
+    settings = settings or Settings()
+    configure_logging(settings.log_level)
+    missing = settings.missing_runtime_config()
+    if missing:
+        logging.getLogger(__name__).error(
+            "Bot startup blocked; configure environment variables: %s",
+            ", ".join(missing),
+        )
         return None
 
     repository = TaskRepository(settings.database_url)
     tasks = TaskManager(repository)
-    context = ContextManager()
+    conversation = ContextManager(repository=repository)
 
-    providers = []
-    if settings.gemini_api_key:
-        providers.append(GeminiProvider(settings.gemini_api_key))
-    if settings.groq_api_key:
-        providers.append(GroqProvider(settings.groq_api_key))
-    if not providers:
-        providers.append(MockProvider())
+    provider_by_name: dict[str, AIProvider] = {
+        "gemini": GeminiProvider(settings.gemini_api_key, model=settings.gemini_model),
+        "groq": GroqProvider(
+            settings.groq_api_key,
+            model=settings.groq_model,
+            timeout_seconds=settings.ai_timeout_seconds,
+        ),
+    }
+    providers = [provider_by_name[name] for name in settings.configured_providers]
+    provider_manager = ProviderManager(
+        providers,
+        policy=FailoverPolicy(
+            max_retries=settings.ai_max_retries,
+            initial_delay_seconds=settings.ai_retry_initial_delay_seconds,
+            max_delay_seconds=settings.ai_retry_max_delay_seconds,
+        ),
+        timeout_seconds=settings.ai_timeout_seconds,
+    )
+    browser = BrowserManager(
+        headless=settings.browser_headless,
+        launch_timeout_ms=settings.browser_launch_timeout_ms,
+        security=BrowserSecurity(settings.allowed_domains),
+    )
+    handlers = BotHandlers(settings, provider_manager, conversation, tasks, browser)
 
-    provider_manager = ProviderManager(providers)
-    handlers = BotHandlers(settings, provider_manager, context, tasks)
-
-    if not settings.telegram_bot_token:
-        return None
-
-    application = Application.builder().token(settings.telegram_bot_token).build()
+    application = (
+        Application.builder()
+        .token(settings.telegram_bot_token)
+        .concurrent_updates(4)
+        .post_shutdown(_shutdown)
+        .build()
+    )
+    application.bot_data["provider_manager"] = provider_manager
+    application.bot_data["browser_manager"] = browser
     application.add_handler(CommandHandler("start", handlers.start))
     application.add_handler(CommandHandler("help", handlers.help))
     application.add_handler(CommandHandler("status", handlers.status))
+    application.add_handler(CommandHandler("provider", handlers.providers))
     application.add_handler(CommandHandler("providers", handlers.providers))
     application.add_handler(CommandHandler("test_ai", handlers.test_ai))
     application.add_handler(CommandHandler("browser_status", handlers.browser_status))
     application.add_handler(CommandHandler("cancel", handlers.cancel))
     application.add_handler(CommandHandler("tasks", handlers.tasks))
+    application.add_handler(
+        MessageHandler(filters.TEXT & ~filters.COMMAND, handlers.message)
+    )
+    application.add_error_handler(_handle_telegram_error)
     return application
 
 
 def main() -> None:
     application = build_application()
     if application is None:
-        print("التطبيق يحتاج إلى TELEGRAM_BOT_TOKEN وبيانات المستخدم المصرح به.")
-        print("اختبر الوحدات عبر pytest دون مفاتيح حقيقية.")
-        return
+        raise SystemExit(1)
     application.run_polling(drop_pending_updates=True)
 
 
