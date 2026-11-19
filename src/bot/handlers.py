@@ -22,11 +22,25 @@ TELEGRAM_MESSAGE_LIMIT = 4000
 
 
 def _split_message(text: str, limit: int = TELEGRAM_MESSAGE_LIMIT) -> list[str]:
+    if limit < 1:
+        raise ValueError("limit must be positive")
     chunks: list[str] = []
-    while len(text) > limit:
-        split_at = text.rfind("\n", 0, limit + 1)
-        if split_at <= 0:
-            split_at = limit
+    while text:
+        end = 0
+        units = 0
+        for character in text:
+            character_units = 2 if ord(character) > 0xFFFF else 1
+            if units + character_units > limit:
+                break
+            end += 1
+            units += character_units
+        if end == len(text):
+            chunks.append(text)
+            break
+        if end == 0:
+            raise ValueError("limit is too small to hold one character")
+        line_break = text.rfind("\n", 0, end + 1)
+        split_at = line_break if line_break > 0 else end
         chunks.append(text[:split_at])
         text = text[split_at:].lstrip("\n")
     if text:
@@ -73,7 +87,9 @@ class BotHandlers:
                         if isinstance(retry_after, timedelta)
                         else float(retry_after)
                     )
-                    await asyncio.sleep(min(delay, 30.0))
+                    if delay > 30:
+                        raise
+                    await asyncio.sleep(max(0, delay))
 
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not self._authorized(update):

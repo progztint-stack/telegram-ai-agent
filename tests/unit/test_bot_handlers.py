@@ -98,6 +98,22 @@ async def test_replies_are_split_under_telegram_limit():
 
 
 @pytest.mark.asyncio
+async def test_reply_splitting_respects_telegram_utf16_character_limit():
+    handlers = BotHandlers(
+        Settings(_env_file=None, authorized_telegram_users="123"),
+        ProviderManager([MockProvider()]),
+        ContextManager(),
+        None,
+    )
+    message = FakeMessage()
+
+    await handlers._reply(SimpleNamespace(effective_message=message), "\U0001f600" * 2500)
+
+    assert len(message.replies) == 2
+    assert all(len(reply.encode("utf-16-le")) // 2 <= 4000 for reply in message.replies)
+
+
+@pytest.mark.asyncio
 async def test_telegram_rate_limit_is_retried_once(monkeypatch):
     class RateLimitedMessage(FakeMessage):
         def __init__(self):
