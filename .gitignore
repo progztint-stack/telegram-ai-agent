@@ -1,0 +1,15 @@
+.env
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+data/
+browser_sessions/
+artifacts/
+playwright-report/
+test-results/
+*.log
+
